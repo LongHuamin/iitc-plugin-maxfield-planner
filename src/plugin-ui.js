@@ -2086,6 +2086,7 @@
     self.state.sectionsOpen.keys = false;
     self.state.sectionsOpen.order = false;
     if (self.planLayer && self.planLayer.clearLayers) self.planLayer.clearLayers();
+    self.drawCrossHighlights(null);
     self.drawSelection();
     if (renderAfter) self.render();
     self.noteCurrentChanged();
@@ -2101,6 +2102,7 @@
     self.state.sectionsOpen.keys = false;
     self.state.sectionsOpen.order = false;
     if (self.planLayer && self.planLayer.clearLayers) self.planLayer.clearLayers();
+    self.drawCrossHighlights(null);
     if (self.markerLayer && self.markerLayer.clearLayers) self.markerLayer.clearLayers();
     self.render();
     self.noteCurrentChanged();
@@ -2299,6 +2301,7 @@
     }
     if (!plan || !plan.ok || !plan.fieldCount) {
       self.state.plan = null;
+      self.drawCrossHighlights(null);
       self.drawSelection();
       if (!opts.quiet) self.setStatus(self.t('stPlanFail'));
       self.render();
@@ -2677,6 +2680,7 @@
     self.state.sectionsOpen.keys = false;
     self.state.sectionsOpen.order = false;
     if (self.planLayer && self.planLayer.clearLayers) self.planLayer.clearLayers();
+    self.drawCrossHighlights(null);
     if (self.markerLayer && self.markerLayer.clearLayers) self.markerLayer.clearLayers();
     for (var i = 0; i < portals.length; i++) self.addPortal(portals[i]);
     try { self.refreshNames(); } catch (e3) {}
@@ -3535,10 +3539,47 @@
     });
   };
 
+  // Red dashed overlay on Intel links that cross the plan. Same test and stroke as
+  // IITC Cross Links. Drawn on our own layer; window.links is not restyled.
+  self.drawCrossHighlights = function (plan) {
+    if (!self.crossLinkLayer || typeof L === 'undefined') return;
+    self.crossLinkLayer.clearLayers();
+    if (!plan || !plan.links || !plan.links.length) return;
+    if (typeof MaxfieldCrossLinks === 'undefined' || !window.links) return;
+    var hits;
+    try {
+      hits = MaxfieldCrossLinks.crossedIntelLinks(plan.links, window.links);
+    } catch (e) {
+      return;
+    }
+    var style = {
+      color: '#d22',
+      opacity: 0.7,
+      weight: 5,
+      interactive: false,
+      dashArray: '8,8'
+    };
+    var draw = (typeof L.geodesicPolyline === 'function') ? L.geodesicPolyline : L.polyline;
+    hits.forEach(function (hit) {
+      if (!hit || !hit.latlngs || hit.latlngs.length < 2) return;
+      try {
+        var ll = [
+          L.latLng(hit.latlngs[0].lat, hit.latlngs[0].lng),
+          L.latLng(hit.latlngs[1].lat, hit.latlngs[1].lng)
+        ];
+        self.crossLinkLayer.addLayer(draw(ll, style));
+      } catch (e2) {}
+    });
+    if (self.crossLinkLayer.bringToFront) self.crossLinkLayer.bringToFront();
+  };
+
   self.drawPlan = function (plan) {
     if (!self.planLayer) return;
     self.planLayer.clearLayers();
-    if (!plan || typeof L === 'undefined') return;
+    if (!plan || typeof L === 'undefined') {
+      self.drawCrossHighlights(null);
+      return;
+    }
 
     var fieldHex = self.getFieldHex();
     var linkHex = self.getLinkHex();
@@ -3590,6 +3631,7 @@
     if (self.planLayer.bringToFront) self.planLayer.bringToFront();
     self.drawSelection();
     self.drawWalkNumbers(plan);
+    self.drawCrossHighlights(plan);
   };
 
   self.init = function () {
@@ -3597,8 +3639,10 @@
     self.drawLayer = new L.LayerGroup();
     self.planLayer = new L.FeatureGroup();
     self.markerLayer = new L.FeatureGroup();
+    self.crossLinkLayer = new L.FeatureGroup();
     self.drawLayer.addLayer(self.planLayer);
     self.drawLayer.addLayer(self.markerLayer);
+    self.drawLayer.addLayer(self.crossLinkLayer);
     window.addLayerGroup('maxfield-planner', self.drawLayer, true);
 
     var toolbox = document.getElementById('toolbox');
@@ -3621,6 +3665,14 @@
         if (self.state.open) self.render();
         else if (self.state.plan) self.drawPlan(self.state.plan);
       }
+      if (!self.state.plan || self.state.open) self.drawCrossHighlights(self.state.plan);
+    });
+    ['linkAdded', 'linkRemoved'].forEach(function (hookName) {
+      try {
+        window.addHook(hookName, function () {
+          self.drawCrossHighlights(self.state.plan);
+        });
+      } catch (err) {}
     });
     if (window.addHook) {
       try {

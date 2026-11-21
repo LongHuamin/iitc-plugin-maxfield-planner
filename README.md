@@ -10,7 +10,7 @@ IITC Mobile 请把上面这个地址添加为插件。安装之后会自动更�
 
 在地图上直接点选 portal，或导入 IITC 导出的 bookmark JSON，再点「规划」，用 **Fan Fields 2 的原版规划算法**生成 field 最大化的 link、行走顺序和统计。不需要 Draw Tools 多边形。
 
-当前版本：`1.3.8`
+当前版本：`1.3.9`
 
 本插件是基于 [Fan Fields 2](https://github.com/Heistergand/fanfields2/) 的个人修改版，不是官方 Fan Fields 2。规划引擎在 ISC 许可下派生，版权声明保持原样：Copyright © 2018-2025 IITC plugin: Fan Fields 2，Copyright © 2018 Justus Kenklies。原版算法（凸包锚点 Cycle Start、顺/逆时针、Inbound/Outbound、候选排序、`getThirds2` 成场顺序、不交叉连线）按原文移植，界面则沿用本插件原来的边缘停靠面板。
 
@@ -70,12 +70,12 @@ IITC Mobile 请把上面这个地址添加为插件。安装之后会自动更�
 
 ## 安装
 
-插件文件：`iitc-plugin-maxfield-planner.user.js`（当前版本 1.3.8）。推荐用文首的地址安装，以便自动更新。
+插件文件：`iitc-plugin-maxfield-planner.user.js`（当前版本 1.3.9）。推荐用文首的地址安装，以便自动更新。
 
 ### 桌面端（IITC-CE 或 Tampermonkey）
 
 1. 安装 [IITC-CE](https://iitc.app/) 或 Tampermonkey / Violentmonkey。
-2. 打开文首的安装地址，或打开本地的 `iitc-plugin-maxfield-planner.user.js`。如果以前装过 0.9.x、1.0.0、1.1.0、1.2.x 或 1.3.x，请用这个 1.3.8 覆盖安装。
+2. 打开文首的安装地址，或打开本地的 `iitc-plugin-maxfield-planner.user.js`。如果以前装过 0.9.x、1.0.0、1.1.0、1.2.x 或 1.3.x，请用这个 1.3.9 覆盖安装。
 3. 打开 Ingress Intel 地图，确认插件已启用。
 
 ### IITC Mobile
@@ -106,12 +106,17 @@ token 只保存在本机浏览器里，不会写进 Gist 或日志。要停用�
 node test/test-engine.js
 node test/test-fav-sync.js
 node test/test-current-sync.js
+node test/test-cross-links.js
 node build.js
 ```
 
 `testdata/buxingjie-41.json` 是 41 个 portal 的「步行街多重」书签。凸包三个顶点是祿位高增、地王石柱、亨氏豪庭里的健身器材。循环这三个锚点，应得到三种不同的满场扇形：各 115 个 field、117 条 link，锚点度数为 40。
 
 ## 更新说明
+
+### 1.3.9
+
+规划线和地图上已有的 link 交叉时，会在那条已有 link 上画出红色虚线。
 
 ### 1.3.8
 

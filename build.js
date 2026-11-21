@@ -5,7 +5,7 @@ var fs = require('fs');
 var path = require('path');
 
 var root = __dirname;
-var version = '1.3.8';
+var version = '1.3.9';
 
 var userscriptHeader = [
   '// ==UserScript==',
@@ -58,6 +58,7 @@ var header = userscriptHeader + [
 var geo = fs.readFileSync(path.join(root, 'engine/geo.js'), 'utf8');
 var engine = fs.readFileSync(path.join(root, 'engine/fanfields2-engine.js'), 'utf8');
 var favSync = fs.readFileSync(path.join(root, 'src/fav-sync.js'), 'utf8');
+var crossLinks = fs.readFileSync(path.join(root, 'src/cross-links.js'), 'utf8');
 var ui = fs.readFileSync(path.join(root, 'src/plugin-ui.js'), 'utf8');
 
 var wrapperOpen = [
@@ -85,7 +86,7 @@ var wrapperClose = [
 var boot = "\nvar script = document.createElement('script');\nvar info = {};\nif (typeof GM_info !== 'undefined' && GM_info && GM_info.script) {\n  info.script = {\n    version: GM_info.script.version,\n    name: GM_info.script.name,\n    description: GM_info.script.description\n  };\n}\nscript.appendChild(document.createTextNode('(' + wrapper + ')(' + JSON.stringify(info) + ');'));\n(document.body || document.head || document.documentElement).appendChild(script);\n";
 
 var outPath = path.join(root, 'iitc-plugin-maxfield-planner.user.js');
-fs.writeFileSync(outPath, header + wrapperOpen + '\n' + geo + '\n' + engine + '\n' + favSync + '\n' + ui + '\n' + wrapperClose + boot);
+fs.writeFileSync(outPath, header + wrapperOpen + '\n' + geo + '\n' + engine + '\n' + favSync + '\n' + crossLinks + '\n' + ui + '\n' + wrapperClose + boot);
 console.log('wrote', outPath, fs.statSync(outPath).size, 'bytes');
 
 var metaPath = path.join(root, 'iitc-plugin-maxfield-planner.meta.js');
