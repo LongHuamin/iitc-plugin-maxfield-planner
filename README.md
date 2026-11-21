@@ -10,7 +10,7 @@ IITC Mobile 请把上面这个地址添加为插件。安装之后会自动更�
 
 在地图上直接点选 portal，或导入 IITC 导出的 bookmark JSON，再点「规划」，用 **Fan Fields 2 的原版规划算法**生成 field 最大化的 link、行走顺序和统计。不需要 Draw Tools 多边形。
 
-当前版本：`1.3.7`
+当前版本：`1.3.8`
 
 本插件是基于 [Fan Fields 2](https://github.com/Heistergand/fanfields2/) 的个人修改版，不是官方 Fan Fields 2。规划引擎在 ISC 许可下派生，版权声明保持原样：Copyright © 2018-2025 IITC plugin: Fan Fields 2，Copyright © 2018 Justus Kenklies。原版算法（凸包锚点 Cycle Start、顺/逆时针、Inbound/Outbound、候选排序、`getThirds2` 成场顺序、不交叉连线）按原文移植，界面则沿用本插件原来的边缘停靠面板。
 
@@ -70,12 +70,12 @@ IITC Mobile 请把上面这个地址添加为插件。安装之后会自动更�
 
 ## 安装
 
-插件文件：`iitc-plugin-maxfield-planner.user.js`（当前版本 1.3.7）。推荐用文首的地址安装，以便自动更新。
+插件文件：`iitc-plugin-maxfield-planner.user.js`（当前版本 1.3.8）。推荐用文首的地址安装，以便自动更新。
 
 ### 桌面端（IITC-CE 或 Tampermonkey）
 
 1. 安装 [IITC-CE](https://iitc.app/) 或 Tampermonkey / Violentmonkey。
-2. 打开文首的安装地址，或打开本地的 `iitc-plugin-maxfield-planner.user.js`。如果以前装过 0.9.x、1.0.0、1.1.0、1.2.x 或 1.3.x，请用这个 1.3.7 覆盖安装。
+2. 打开文首的安装地址，或打开本地的 `iitc-plugin-maxfield-planner.user.js`。如果以前装过 0.9.x、1.0.0、1.1.0、1.2.x 或 1.3.x，请用这个 1.3.8 覆盖安装。
 3. 打开 Ingress Intel 地图，确认插件已启用。
 
 ### IITC Mobile
@@ -83,16 +83,16 @@ IITC Mobile 请把上面这个地址添加为插件。安装之后会自动更�
 1. 在插件管理中添加文首的地址并启用，或把 `iitc-plugin-maxfield-planner.user.js` 拷到手机后导入并启用。
 2. 打开 Intel 地图后即可使用。手机上可以把窗口折叠（标题栏的「–」），或先关掉窗口、只留边缘按钮。窗口贴边隐藏时，点击地图上的 portal 不会自动弹出窗口；要点选采集，请先打开窗口。未加载的 portal 无法采集。
 
-### 收藏同步（GitHub Gist）
+### 收藏与当前规划同步（GitHub Gist）
 
-收藏可以通过你自己的 GitHub Gist 在电脑和手机之间同步。不设置也能照常使用，收藏仍保存在本机。
+收藏，以及当前正在编辑的规划，都可以用你自己的 GitHub Gist 在电脑和 IITC Mobile 之间同步。当前规划不用先存成收藏。不设置也能照常使用，数据仍保存在本机。
 
 1. 创建 token（二选一）：
    - 经典 token：GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic) → Generate new token (classic)，只勾选 `gist`。
    - 细粒度 token：同一页面选 Fine-grained tokens → Generate new token，在 Account permissions 里把 Gists 设为 Read and write。
-2. 在插件窗口「收藏」那一行点 **设置**，把 token 粘贴到 `GitHub token` 框里，点 **保存**。Gist ID 可以留空，插件会自动找到或新建一个私密 Gist（文件名 `maxfield-planner-favorites.json`）。
+2. 在插件窗口「收藏」那一行点 **设置**，把 token 粘贴到 `GitHub token` 框里，点 **保存**。Gist ID 可以留空，插件会自动找到或新建一个私密 Gist。收藏在 `maxfield-planner-favorites.json`，当前规划在 `maxfield-planner-current.json`（已选 portal、排除的 portal，以及顺/逆时针、Inbound/Outbound、SBUL 和锚点）。
 3. 电脑和手机各粘贴一次同一个 token。
-4. 之后每次启动会自动拉取合并，保存或删除收藏后会自动上传；也可以随时点 **同步**。
+4. 每次启动会自动拉取收藏和当前规划。收藏在保存或删除后自动上传。当前规划在增删 portal、导入、重新规划、切换方案、改设置或清空之后自动上传。点 **同步** 会同时同步这两样。较新的一份会留下，不会用旧的盖掉新的。
 
 token 只保存在本机浏览器里，不会写进 Gist 或日志。要停用同步，点 **设置** → **清除**。token 过期后会提示「同步失败：token 无效或已过期」，重新创建一个粘贴即可。
 
@@ -105,12 +105,17 @@ token 只保存在本机浏览器里，不会写进 Gist 或日志。要停用�
 ```bash
 node test/test-engine.js
 node test/test-fav-sync.js
+node test/test-current-sync.js
 node build.js
 ```
 
 `testdata/buxingjie-41.json` 是 41 个 portal 的「步行街多重」书签。凸包三个顶点是祿位高增、地王石柱、亨氏豪庭里的健身器材。循环这三个锚点，应得到三种不同的满场扇形：各 115 个 field、117 条 link，锚点度数为 40。
 
 ## 更新说明
+
+### 1.3.8
+
+当前正在编辑的规划也会通过 GitHub 同步到另一台设备，不必先存成收藏。
 
 ### 1.3.7
 

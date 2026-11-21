@@ -5,7 +5,7 @@ var fs = require('fs');
 var path = require('path');
 
 var root = __dirname;
-var version = '1.3.7';
+var version = '1.3.8';
 
 var userscriptHeader = [
   '// ==UserScript==',

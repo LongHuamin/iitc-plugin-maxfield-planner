@@ -18,6 +18,8 @@
   self.FAV_TOMB_KEY = 'iitc-maxfield-planner-favorites-deleted';
   self.SYNC_TOKEN_KEY = 'iitc-maxfield-planner-gist-token';
   self.SYNC_GIST_KEY = 'iitc-maxfield-planner-gist-id';
+  self.CURRENT_KEY = 'iitc-maxfield-planner-current';
+  self.CLIENT_KEY = 'iitc-maxfield-planner-client-id';
   self.DEFAULT_FIELD_HEX = '#16d977';
   self.DEFAULT_LINK_HEX = '#e53935';
   self.DEFAULT_WALK_HEX = '#ffd24a';
@@ -2023,6 +2025,7 @@
     }
     self.state.startingpointIndex = i;
     self.scheduleReplan();
+    self.noteCurrentChanged();
   };
 
   self.clickPlan = function () {
@@ -2054,13 +2057,17 @@
       self.render();
       return;
     }
+    var changed = self.state.is_clockwise !== next;
     self.state.is_clockwise = next;
     self.scheduleReplan();
+    if (changed) self.noteCurrentChanged();
   };
 
   self.setStarDirection = function (dir) {
+    var changed = self.state.stardirection !== dir;
     self.state.stardirection = dir;
     self.scheduleReplan();
+    if (changed) self.noteCurrentChanged();
   };
 
   self.changeSBUL = function (delta) {
@@ -2070,6 +2077,7 @@
     if (n === self.state.availableSBUL) return;
     self.state.availableSBUL = n;
     self.scheduleReplan();
+    self.noteCurrentChanged();
   };
 
   self.clearPlan = function (renderAfter) {
@@ -2080,6 +2088,7 @@
     if (self.planLayer && self.planLayer.clearLayers) self.planLayer.clearLayers();
     self.drawSelection();
     if (renderAfter) self.render();
+    self.noteCurrentChanged();
   };
 
   self.clearAll = function () {
@@ -2094,6 +2103,7 @@
     if (self.planLayer && self.planLayer.clearLayers) self.planLayer.clearLayers();
     if (self.markerLayer && self.markerLayer.clearLayers) self.markerLayer.clearLayers();
     self.render();
+    self.noteCurrentChanged();
   };
 
   self.removePortal = function (id) {
@@ -2115,10 +2125,12 @@
         return;
       }
       self.scheduleReplan();
+      self.noteCurrentChanged();
       return;
     }
     self.setStatus(self.t('stToggleOff'));
     self.render();
+    self.noteCurrentChanged();
   };
 
   self.restorePortal = function (id) {
@@ -2127,10 +2139,12 @@
     delete self.state.excluded[id];
     if (hadPlan && self.activePortals().length >= 3) {
       self.scheduleReplan();
+      self.noteCurrentChanged();
       return;
     }
     self.setStatus(self.t('stToggleOn'));
     self.render();
+    self.noteCurrentChanged();
   };
 
   self.addPortal = function (portal) {
@@ -2226,7 +2240,8 @@
       if (!self.portalInPlannedFields(portalIn)) return;
       self.state.lastPickGuid = guid;
       self.state.lastPickAt = now;
-      self.addPortal(portalIn);
+      if (!self.addPortal(portalIn)) return;
+      self.noteCurrentChanged();
       self.scheduleReplan(self.state.open ? self.t('stAddedInField') : '');
       return;
     }
@@ -2246,7 +2261,8 @@
       self.setStatus(self.t('stAlready'));
       return;
     }
-    self.addPortal(portal);
+    if (!self.addPortal(portal)) return;
+    self.noteCurrentChanged();
     self.render();
     self.setStatus(self.defaultStatus());
   };
@@ -2263,7 +2279,7 @@
     opts = opts || {};
     var pts = self.activePortals();
     if (pts.length < 3) {
-      self.setStatus(self.t('stNeedThree'));
+      if (!opts.quiet) self.setStatus(self.t('stNeedThree'));
       return;
     }
     var plan;
@@ -2278,14 +2294,15 @@
         respectIntel: false
       });
     } catch (err) {
-      self.setStatus(self.t('stPlanFail'));
+      if (!opts.quiet) self.setStatus(self.t('stPlanFail'));
       return;
     }
     if (!plan || !plan.ok || !plan.fieldCount) {
       self.state.plan = null;
       self.drawSelection();
-      self.setStatus(self.t('stPlanFail'));
+      if (!opts.quiet) self.setStatus(self.t('stPlanFail'));
       self.render();
+      self.noteCurrentChanged();
       return;
     }
     self.state.startingpointIndex = plan.startingpointIndex;
@@ -2293,7 +2310,8 @@
     self.state.plan = plan;
     self.drawPlan(plan);
     self.render();
-    self.setStatus(opts.status || '');
+    if (!opts.quiet) self.setStatus(opts.status || '');
+    self.noteCurrentChanged();
   };
 
   self.renderControls = function () {
@@ -2664,6 +2682,7 @@
     try { self.refreshNames(); } catch (e3) {}
     self.render();
     self.setStatus(self.t('stUploaded', portals.length));
+    self.noteCurrentChanged();
     return true;
   };
 
@@ -2857,7 +2876,151 @@
     return self.t('syncErrNetwork');
   };
 
+  self.getClientId = function () {
+    try {
+      var id = localStorage.getItem(self.CLIENT_KEY);
+      if (id) return id;
+      id = 'mfp-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36);
+      localStorage.setItem(self.CLIENT_KEY, id);
+      return id;
+    } catch (e) {
+      if (!self._clientIdMem) {
+        self._clientIdMem = 'mfp-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36);
+      }
+      return self._clientIdMem;
+    }
+  };
+
+  self.captureCurrentDoc = function () {
+    var portals = [];
+    var excluded = [];
+    var order = self.state.listOrder || [];
+    for (var i = 0; i < order.length; i++) {
+      var id = order[i];
+      var ex = self.state.excluded && self.state.excluded[id];
+      var pt = (self.state.portals && self.state.portals[id]) || ex;
+      if (!pt) continue;
+      var lite = {
+        guid: pt.guid || id,
+        lat: pt.lat,
+        lng: pt.lng,
+        name: pt.name || ''
+      };
+      if (ex) excluded.push(lite);
+      else portals.push(lite);
+    }
+    return {
+      updatedAt: self._currentUpdatedAt || 0,
+      clientId: self.getClientId(),
+      planned: !!self.state.plan,
+      startingpointIndex: self.state.startingpointIndex || 0,
+      is_clockwise: self.state.is_clockwise !== false,
+      stardirection: self.state.stardirection,
+      availableSBUL: self.state.availableSBUL == null ? 2 : self.state.availableSBUL,
+      portals: portals,
+      excluded: excluded,
+      listOrder: order.slice()
+    };
+  };
+
+  self.persistCurrentDoc = function (doc) {
+    try { localStorage.setItem(self.CURRENT_KEY, JSON.stringify(doc)); } catch (e) {}
+  };
+
+  self.noteCurrentChanged = function () {
+    if (self._suppressCurrentPush) return;
+    var doc = self.captureCurrentDoc();
+    var key = MaxfieldFavSync.currentKey(doc);
+    if (self._currentKey != null && key === self._currentKey) return;
+    self._currentKey = key;
+    self._currentUpdatedAt = Date.now();
+    doc.updatedAt = self._currentUpdatedAt;
+    doc.clientId = self.getClientId();
+    self.persistCurrentDoc(doc);
+    self.scheduleCurrentPush();
+  };
+
+  self.scheduleCurrentPush = function () {
+    if (!self._currentSched) {
+      self._currentSched = MaxfieldFavSync.createCurrentScheduler({
+        delay: 2000,
+        getDoc: function () { return self.captureCurrentDoc(); },
+        push: function (doc) {
+          return self.syncCurrentPlan(doc).then(function (res) {
+            return res;
+          }, function (err) {
+            self.setStatus(self.t('stSyncFail', self.syncErrorText(err)));
+            throw err;
+          });
+        }
+      });
+    }
+    self._currentSched.schedule();
+  };
+
+  // Pull, and push only when this device's copy is the newer one. Same gist as favorites.
+  self.syncCurrentPlan = function (doc) {
+    var token = self.getSyncToken();
+    if (!token) return Promise.resolve({ pushed: false, apply: false });
+    var local = doc || self.captureCurrentDoc();
+    return MaxfieldFavSync.syncCurrent({
+      token: token,
+      gistId: self.getSyncGistId(),
+      local: local,
+      clientId: self.getClientId()
+    }).then(function (res) {
+      try { if (res.gistId) localStorage.setItem(self.SYNC_GIST_KEY, res.gistId); } catch (e) {}
+      if (res.apply && res.doc && MaxfieldFavSync.shouldApplyCurrent(self.captureCurrentDoc(), res.doc, self.getClientId())) {
+        self.applyCurrentDoc(res.doc);
+      }
+      return res;
+    });
+  };
+
+  self.applyCurrentDoc = function (doc) {
+    var norm = MaxfieldFavSync.normalizeCurrent(doc);
+    self._suppressCurrentPush = true;
+    try {
+      self.state.portals = {};
+      self.state.excluded = {};
+      self.state.listOrder = norm.listOrder.slice();
+      self.state.plan = null;
+      norm.portals.forEach(function (p) {
+        self.state.portals[p.guid] = { id: p.guid, guid: p.guid, name: p.name, lat: p.lat, lng: p.lng };
+      });
+      norm.excluded.forEach(function (p) {
+        var o = { id: p.guid, guid: p.guid, name: p.name, lat: p.lat, lng: p.lng };
+        self.state.portals[p.guid] = o;
+        self.state.excluded[p.guid] = o;
+      });
+      self.state.startingpointIndex = norm.startingpointIndex;
+      self.state.is_clockwise = norm.is_clockwise;
+      self.state.stardirection = norm.stardirection;
+      self.state.availableSBUL = norm.availableSBUL;
+      self._currentUpdatedAt = norm.updatedAt;
+      if (norm.planned && self.activePortals().length >= 3) {
+        self.runPlan({ fromControl: true, quiet: true });
+      } else {
+        self.clearPlan(false);
+        self.render();
+      }
+    } finally {
+      self._suppressCurrentPush = false;
+    }
+    self._currentUpdatedAt = norm.updatedAt;
+    self._currentKey = MaxfieldFavSync.currentKey(norm);
+    self.persistCurrentDoc(norm);
+  };
+
+  self.restoreCurrentLocal = function () {
+    var raw;
+    try { raw = localStorage.getItem(self.CURRENT_KEY); } catch (e) { return; }
+    if (!raw) return;
+    try { self.applyCurrentDoc(JSON.parse(raw)); } catch (e2) {}
+  };
+
   // opts.manual: show progress and success; otherwise only failures are shown.
+  // Also pulls/pushes the current working plan. Success text stays the favorites message.
   self.syncFavorites = function (opts) {
     opts = opts || {};
     var token = self.getSyncToken();
@@ -2885,6 +3048,9 @@
         self.writeFavTombstones(merged.tombstones);
         try { if (res.gistId) localStorage.setItem(self.SYNC_GIST_KEY, res.gistId); } catch (e) {}
         self.renderFavorites();
+        return self.syncCurrentPlan();
+      })
+      .then(function () {
         if (opts.manual) self.setStatus(self.t('stSynced'));
       }, function (err) {
         self.setStatus(self.t('stSyncFail', self.syncErrorText(err)));
@@ -3489,6 +3655,10 @@
     self.buildPanel();
     self.state.open = false;
     self.updatePanelChrome();
+    self.restoreCurrentLocal();
+    if (self._currentKey == null) {
+      self._currentKey = MaxfieldFavSync.currentKey(self.captureCurrentDoc());
+    }
     if (self.getSyncToken()) {
       setTimeout(function () { self.syncFavorites(); }, 1500);
     }

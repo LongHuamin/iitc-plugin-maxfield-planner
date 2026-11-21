@@ -1,4 +1,5 @@
 /* Favorites sync for maxfield-planner: merge logic (pure) + GitHub Gist client.
+ * The current working plan is a second file in the same gist (not a favorite).
  * Works in Node (tests) and in the IITC page (desktop and IITC Mobile WebView).
  * Uses fetch only; no GM_ APIs. The token is never logged.
  */
@@ -13,6 +14,7 @@
   'use strict';
 
   var GIST_FILE = 'maxfield-planner-favorites.json';
+  var CURRENT_FILE = 'maxfield-planner-current.json';
   var GIST_DESC = 'maxfield-planner favorites';
   var API = 'https://api.github.com';
 
@@ -127,6 +129,158 @@
     return canonical(x) === canonical(y);
   }
 
+  function portalLite(p) {
+    if (!p || typeof p !== 'object') return null;
+    var guid = String(p.guid || p.id || '').replace(/^\s+|\s+$/g, '');
+    if (!guid) return null;
+    var lat = Number(p.lat);
+    var lng = Number(p.lng);
+    if (!isFinite(lat) || !isFinite(lng)) return null;
+    return { guid: guid, lat: lat, lng: lng, name: p.name == null ? '' : String(p.name) };
+  }
+
+  // Current working plan. updatedAt/clientId are kept, but content identity ignores them.
+  function normalizeCurrent(doc) {
+    doc = (doc && typeof doc === 'object') ? doc : {};
+    var excluded = [];
+    var exclIds = {};
+    (Array.isArray(doc.excluded) ? doc.excluded : []).forEach(function (p) {
+      var n = portalLite(p);
+      if (!n || exclIds[n.guid]) return;
+      exclIds[n.guid] = true;
+      excluded.push(n);
+    });
+    var portals = [];
+    var seen = {};
+    (Array.isArray(doc.portals) ? doc.portals : []).forEach(function (p) {
+      var n = portalLite(p);
+      if (!n || seen[n.guid] || exclIds[n.guid]) return;
+      seen[n.guid] = true;
+      portals.push(n);
+    });
+    var byGuid = {};
+    portals.forEach(function (p) { byGuid[p.guid] = true; });
+    excluded.forEach(function (p) { byGuid[p.guid] = true; });
+    var listOrder = [];
+    var ordered = {};
+    (Array.isArray(doc.listOrder) ? doc.listOrder : []).forEach(function (id) {
+      id = String(id || '').replace(/^\s+|\s+$/g, '');
+      if (!id || ordered[id] || !byGuid[id]) return;
+      ordered[id] = true;
+      listOrder.push(id);
+    });
+    portals.forEach(function (p) {
+      if (ordered[p.guid]) return;
+      ordered[p.guid] = true;
+      listOrder.push(p.guid);
+    });
+    excluded.forEach(function (p) {
+      if (ordered[p.guid]) return;
+      ordered[p.guid] = true;
+      listOrder.push(p.guid);
+    });
+    var sbul = doc.availableSBUL;
+    if (sbul == null || sbul === '') sbul = 2;
+    sbul = Number(sbul);
+    if (!isFinite(sbul)) sbul = 2;
+    if (sbul < 0) sbul = 0;
+    if (sbul > 4) sbul = 4;
+    sbul = Math.round(sbul);
+    var star = Number(doc.stardirection);
+    if (star !== 1 && star !== -1) star = -1;
+    var idx = Number(doc.startingpointIndex);
+    if (!isFinite(idx) || idx < 0) idx = 0;
+    idx = Math.floor(idx);
+    return {
+      updatedAt: num(doc.updatedAt),
+      clientId: doc.clientId ? String(doc.clientId) : '',
+      planned: !!doc.planned,
+      startingpointIndex: idx,
+      is_clockwise: doc.is_clockwise !== false,
+      stardirection: star,
+      availableSBUL: sbul,
+      portals: portals,
+      excluded: excluded,
+      listOrder: listOrder
+    };
+  }
+
+  function currentKey(doc) {
+    var d = normalizeCurrent(doc);
+    return JSON.stringify({
+      planned: d.planned,
+      startingpointIndex: d.startingpointIndex,
+      is_clockwise: d.is_clockwise,
+      stardirection: d.stardirection,
+      availableSBUL: d.availableSBUL,
+      portals: d.portals,
+      excluded: d.excluded,
+      listOrder: d.listOrder
+    });
+  }
+
+  function sameCurrent(a, b) {
+    return currentKey(a) === currentKey(b);
+  }
+
+  // Remote replaces local only when it is strictly newer and was written by another device.
+  function shouldApplyCurrent(local, remote, ourClientId) {
+    if (!remote) return false;
+    local = normalizeCurrent(local);
+    remote = normalizeCurrent(remote);
+    var ours = ourClientId || local.clientId;
+    if (!remote.clientId || remote.clientId === ours) return false;
+    return remote.updatedAt > local.updatedAt;
+  }
+
+  // push: local wins. apply: remote wins. skip: nothing to write and nothing to take.
+  function decideCurrent(local, remote, ourClientId) {
+    local = normalizeCurrent(local);
+    if (ourClientId) local.clientId = String(ourClientId);
+    if (!remote) {
+      if (!local.updatedAt) return { action: 'skip', doc: local };
+      return { action: 'push', doc: local };
+    }
+    remote = normalizeCurrent(remote);
+    if (sameCurrent(local, remote)) return { action: 'skip', doc: local };
+    if (shouldApplyCurrent(local, remote, local.clientId)) return { action: 'apply', doc: remote };
+    if (local.updatedAt > remote.updatedAt) return { action: 'push', doc: local };
+    return { action: 'skip', doc: local };
+  }
+
+  // Coalesce plan edits. A second flush with the same content does not call push.
+  function createCurrentScheduler(opts) {
+    opts = opts || {};
+    var delay = opts.delay == null ? 2000 : opts.delay;
+    var setTimer = opts.setTimer || function (fn, ms) { return setTimeout(fn, ms); };
+    var clearTimer = opts.clearTimer || function (id) { clearTimeout(id); };
+    var getDoc = opts.getDoc;
+    var push = opts.push;
+    var timer = null;
+    var lastKey = null;
+
+    function schedule() {
+      if (timer != null) clearTimer(timer);
+      timer = setTimer(function () {
+        timer = null;
+        var doc = getDoc();
+        var key = currentKey(doc);
+        if (lastKey !== null && key === lastKey) return;
+        lastKey = key;
+        Promise.resolve(push(doc)).then(function (res) {
+          if (res && res.apply && res.doc) {
+            var applied = currentKey(res.doc);
+            if (applied !== key) lastKey = applied;
+          }
+        }, function () {
+          if (lastKey === key) lastKey = null;
+        });
+      }, delay);
+    }
+
+    return { schedule: schedule, delay: delay };
+  }
+
   function SyncError(code, status) {
     this.code = code;
     this.status = status || 0;
@@ -215,7 +369,52 @@
       return req('PATCH', API + '/gists/' + encodeURIComponent(id), { files: files });
     }
 
-    return { findGist: findGist, createGist: createGist, readGist: readGist, writeGist: writeGist };
+    function parseCurrent(text) {
+      if (!text) return null;
+      try {
+        return normalizeCurrent(JSON.parse(text));
+      } catch (e) {
+        throw new SyncError('badjson');
+      }
+    }
+
+    function readCurrent(id) {
+      return req('GET', API + '/gists/' + encodeURIComponent(id)).then(function (g) {
+        var file = g && g.files && g.files[CURRENT_FILE];
+        if (!file) return null;
+        if (file.truncated && file.raw_url && fetchImpl) {
+          return fetchImpl(file.raw_url, { cache: 'no-store' }).then(function (res) {
+            if (!res.ok) throw new SyncError('http', res.status);
+            return res.text();
+          }, function () { throw new SyncError('network'); }).then(parseCurrent);
+        }
+        return parseCurrent(file.content);
+      });
+    }
+
+    function writeCurrent(id, doc) {
+      var files = {};
+      files[CURRENT_FILE] = { content: JSON.stringify(normalizeCurrent(doc)) };
+      return req('PATCH', API + '/gists/' + encodeURIComponent(id), { files: files });
+    }
+
+    function createCurrentGist(doc) {
+      var files = {};
+      files[GIST_FILE] = { content: JSON.stringify({ favorites: [], tombstones: {} }) };
+      files[CURRENT_FILE] = { content: JSON.stringify(normalizeCurrent(doc)) };
+      return req('POST', API + '/gists', { description: GIST_DESC, public: false, files: files })
+        .then(function (g) { return g.id; });
+    }
+
+    return {
+      findGist: findGist,
+      createGist: createGist,
+      readGist: readGist,
+      writeGist: writeGist,
+      readCurrent: readCurrent,
+      writeCurrent: writeCurrent,
+      createCurrentGist: createCurrentGist
+    };
   }
 
   // One full sync round. local = {favorites, tombstones}; gistId may be empty.
@@ -242,15 +441,55 @@
     });
   }
 
+  // Reconcile the current working plan with the same gist. Does not touch favorites.
+  // Resolves { doc, gistId, pushed, apply }.
+  function syncCurrent(opts) {
+    opts = opts || {};
+    var client = createClient(opts);
+    var ourId = opts.clientId || (opts.local && opts.local.clientId) || '';
+    var local = normalizeCurrent(opts.local);
+    if (ourId) local.clientId = String(ourId);
+    var gistId = opts.gistId || '';
+
+    function finishExisting(id) {
+      return client.readCurrent(id).then(function (remote) {
+        var decision = decideCurrent(local, remote, local.clientId);
+        if (decision.action === 'apply') return { doc: decision.doc, gistId: id, pushed: false, apply: true };
+        if (decision.action !== 'push') return { doc: local, gistId: id, pushed: false, apply: false };
+        return client.writeCurrent(id, local).then(function () {
+          return { doc: local, gistId: id, pushed: true, apply: false };
+        });
+      });
+    }
+
+    if (gistId) return finishExisting(gistId);
+    return client.findGist().then(function (id) {
+      if (id) return finishExisting(id);
+      var decision = decideCurrent(local, null, local.clientId);
+      if (decision.action !== 'push') return { doc: local, gistId: '', pushed: false, apply: false };
+      return client.createCurrentGist(local).then(function (nid) {
+        return { doc: local, gistId: nid, pushed: true, apply: false };
+      });
+    });
+  }
+
   return {
     GIST_FILE: GIST_FILE,
+    CURRENT_FILE: CURRENT_FILE,
     newId: newId,
     migrate: migrate,
     normalizeDoc: normalizeDoc,
     merge: merge,
     sameDoc: sameDoc,
+    normalizeCurrent: normalizeCurrent,
+    currentKey: currentKey,
+    sameCurrent: sameCurrent,
+    shouldApplyCurrent: shouldApplyCurrent,
+    decideCurrent: decideCurrent,
+    createCurrentScheduler: createCurrentScheduler,
     createClient: createClient,
     syncOnce: syncOnce,
+    syncCurrent: syncCurrent,
     SyncError: SyncError
   };
 });

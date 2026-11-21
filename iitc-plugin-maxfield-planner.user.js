@@ -2,7 +2,7 @@
 // @id             iitc-plugin-maxfield-planner@iitc
 // @name           IITC plugin: maxfield-planner
 // @category       Draw
-// @version        1.3.7
+// @version        1.3.8
 // @namespace      iitc-plugin-maxfield-planner
 // @description    在地图上直接点选 portal，用 Fan Fields 2 原版规划算法（锚点 Cycle Start、顺/逆时针、Inbound/Outbound）生成 field 最大化的 link 与行走顺序。统计层数、link、portal 与 AP。支持中英文与深浅色主题。兼容 IITC 桌面端与 IITC Mobile。本插件是 Fan Fields 2（ISC，© 2018-2025 IITC plugin: Fan Fields 2 / Justus Kenklies）规划引擎的派生作品，不是官方 Fan Fields 2。
 // @include        https://intel.ingress.com/*
@@ -1299,6 +1299,7 @@ function wrapper(plugin_info) {
 });
 
 /* Favorites sync for maxfield-planner: merge logic (pure) + GitHub Gist client.
+ * The current working plan is a second file in the same gist (not a favorite).
  * Works in Node (tests) and in the IITC page (desktop and IITC Mobile WebView).
  * Uses fetch only; no GM_ APIs. The token is never logged.
  */
@@ -1313,6 +1314,7 @@ function wrapper(plugin_info) {
   'use strict';
 
   var GIST_FILE = 'maxfield-planner-favorites.json';
+  var CURRENT_FILE = 'maxfield-planner-current.json';
   var GIST_DESC = 'maxfield-planner favorites';
   var API = 'https://api.github.com';
 
@@ -1427,6 +1429,158 @@ function wrapper(plugin_info) {
     return canonical(x) === canonical(y);
   }
 
+  function portalLite(p) {
+    if (!p || typeof p !== 'object') return null;
+    var guid = String(p.guid || p.id || '').replace(/^\s+|\s+$/g, '');
+    if (!guid) return null;
+    var lat = Number(p.lat);
+    var lng = Number(p.lng);
+    if (!isFinite(lat) || !isFinite(lng)) return null;
+    return { guid: guid, lat: lat, lng: lng, name: p.name == null ? '' : String(p.name) };
+  }
+
+  // Current working plan. updatedAt/clientId are kept, but content identity ignores them.
+  function normalizeCurrent(doc) {
+    doc = (doc && typeof doc === 'object') ? doc : {};
+    var excluded = [];
+    var exclIds = {};
+    (Array.isArray(doc.excluded) ? doc.excluded : []).forEach(function (p) {
+      var n = portalLite(p);
+      if (!n || exclIds[n.guid]) return;
+      exclIds[n.guid] = true;
+      excluded.push(n);
+    });
+    var portals = [];
+    var seen = {};
+    (Array.isArray(doc.portals) ? doc.portals : []).forEach(function (p) {
+      var n = portalLite(p);
+      if (!n || seen[n.guid] || exclIds[n.guid]) return;
+      seen[n.guid] = true;
+      portals.push(n);
+    });
+    var byGuid = {};
+    portals.forEach(function (p) { byGuid[p.guid] = true; });
+    excluded.forEach(function (p) { byGuid[p.guid] = true; });
+    var listOrder = [];
+    var ordered = {};
+    (Array.isArray(doc.listOrder) ? doc.listOrder : []).forEach(function (id) {
+      id = String(id || '').replace(/^\s+|\s+$/g, '');
+      if (!id || ordered[id] || !byGuid[id]) return;
+      ordered[id] = true;
+      listOrder.push(id);
+    });
+    portals.forEach(function (p) {
+      if (ordered[p.guid]) return;
+      ordered[p.guid] = true;
+      listOrder.push(p.guid);
+    });
+    excluded.forEach(function (p) {
+      if (ordered[p.guid]) return;
+      ordered[p.guid] = true;
+      listOrder.push(p.guid);
+    });
+    var sbul = doc.availableSBUL;
+    if (sbul == null || sbul === '') sbul = 2;
+    sbul = Number(sbul);
+    if (!isFinite(sbul)) sbul = 2;
+    if (sbul < 0) sbul = 0;
+    if (sbul > 4) sbul = 4;
+    sbul = Math.round(sbul);
+    var star = Number(doc.stardirection);
+    if (star !== 1 && star !== -1) star = -1;
+    var idx = Number(doc.startingpointIndex);
+    if (!isFinite(idx) || idx < 0) idx = 0;
+    idx = Math.floor(idx);
+    return {
+      updatedAt: num(doc.updatedAt),
+      clientId: doc.clientId ? String(doc.clientId) : '',
+      planned: !!doc.planned,
+      startingpointIndex: idx,
+      is_clockwise: doc.is_clockwise !== false,
+      stardirection: star,
+      availableSBUL: sbul,
+      portals: portals,
+      excluded: excluded,
+      listOrder: listOrder
+    };
+  }
+
+  function currentKey(doc) {
+    var d = normalizeCurrent(doc);
+    return JSON.stringify({
+      planned: d.planned,
+      startingpointIndex: d.startingpointIndex,
+      is_clockwise: d.is_clockwise,
+      stardirection: d.stardirection,
+      availableSBUL: d.availableSBUL,
+      portals: d.portals,
+      excluded: d.excluded,
+      listOrder: d.listOrder
+    });
+  }
+
+  function sameCurrent(a, b) {
+    return currentKey(a) === currentKey(b);
+  }
+
+  // Remote replaces local only when it is strictly newer and was written by another device.
+  function shouldApplyCurrent(local, remote, ourClientId) {
+    if (!remote) return false;
+    local = normalizeCurrent(local);
+    remote = normalizeCurrent(remote);
+    var ours = ourClientId || local.clientId;
+    if (!remote.clientId || remote.clientId === ours) return false;
+    return remote.updatedAt > local.updatedAt;
+  }
+
+  // push: local wins. apply: remote wins. skip: nothing to write and nothing to take.
+  function decideCurrent(local, remote, ourClientId) {
+    local = normalizeCurrent(local);
+    if (ourClientId) local.clientId = String(ourClientId);
+    if (!remote) {
+      if (!local.updatedAt) return { action: 'skip', doc: local };
+      return { action: 'push', doc: local };
+    }
+    remote = normalizeCurrent(remote);
+    if (sameCurrent(local, remote)) return { action: 'skip', doc: local };
+    if (shouldApplyCurrent(local, remote, local.clientId)) return { action: 'apply', doc: remote };
+    if (local.updatedAt > remote.updatedAt) return { action: 'push', doc: local };
+    return { action: 'skip', doc: local };
+  }
+
+  // Coalesce plan edits. A second flush with the same content does not call push.
+  function createCurrentScheduler(opts) {
+    opts = opts || {};
+    var delay = opts.delay == null ? 2000 : opts.delay;
+    var setTimer = opts.setTimer || function (fn, ms) { return setTimeout(fn, ms); };
+    var clearTimer = opts.clearTimer || function (id) { clearTimeout(id); };
+    var getDoc = opts.getDoc;
+    var push = opts.push;
+    var timer = null;
+    var lastKey = null;
+
+    function schedule() {
+      if (timer != null) clearTimer(timer);
+      timer = setTimer(function () {
+        timer = null;
+        var doc = getDoc();
+        var key = currentKey(doc);
+        if (lastKey !== null && key === lastKey) return;
+        lastKey = key;
+        Promise.resolve(push(doc)).then(function (res) {
+          if (res && res.apply && res.doc) {
+            var applied = currentKey(res.doc);
+            if (applied !== key) lastKey = applied;
+          }
+        }, function () {
+          if (lastKey === key) lastKey = null;
+        });
+      }, delay);
+    }
+
+    return { schedule: schedule, delay: delay };
+  }
+
   function SyncError(code, status) {
     this.code = code;
     this.status = status || 0;
@@ -1515,7 +1669,52 @@ function wrapper(plugin_info) {
       return req('PATCH', API + '/gists/' + encodeURIComponent(id), { files: files });
     }
 
-    return { findGist: findGist, createGist: createGist, readGist: readGist, writeGist: writeGist };
+    function parseCurrent(text) {
+      if (!text) return null;
+      try {
+        return normalizeCurrent(JSON.parse(text));
+      } catch (e) {
+        throw new SyncError('badjson');
+      }
+    }
+
+    function readCurrent(id) {
+      return req('GET', API + '/gists/' + encodeURIComponent(id)).then(function (g) {
+        var file = g && g.files && g.files[CURRENT_FILE];
+        if (!file) return null;
+        if (file.truncated && file.raw_url && fetchImpl) {
+          return fetchImpl(file.raw_url, { cache: 'no-store' }).then(function (res) {
+            if (!res.ok) throw new SyncError('http', res.status);
+            return res.text();
+          }, function () { throw new SyncError('network'); }).then(parseCurrent);
+        }
+        return parseCurrent(file.content);
+      });
+    }
+
+    function writeCurrent(id, doc) {
+      var files = {};
+      files[CURRENT_FILE] = { content: JSON.stringify(normalizeCurrent(doc)) };
+      return req('PATCH', API + '/gists/' + encodeURIComponent(id), { files: files });
+    }
+
+    function createCurrentGist(doc) {
+      var files = {};
+      files[GIST_FILE] = { content: JSON.stringify({ favorites: [], tombstones: {} }) };
+      files[CURRENT_FILE] = { content: JSON.stringify(normalizeCurrent(doc)) };
+      return req('POST', API + '/gists', { description: GIST_DESC, public: false, files: files })
+        .then(function (g) { return g.id; });
+    }
+
+    return {
+      findGist: findGist,
+      createGist: createGist,
+      readGist: readGist,
+      writeGist: writeGist,
+      readCurrent: readCurrent,
+      writeCurrent: writeCurrent,
+      createCurrentGist: createCurrentGist
+    };
   }
 
   // One full sync round. local = {favorites, tombstones}; gistId may be empty.
@@ -1542,15 +1741,55 @@ function wrapper(plugin_info) {
     });
   }
 
+  // Reconcile the current working plan with the same gist. Does not touch favorites.
+  // Resolves { doc, gistId, pushed, apply }.
+  function syncCurrent(opts) {
+    opts = opts || {};
+    var client = createClient(opts);
+    var ourId = opts.clientId || (opts.local && opts.local.clientId) || '';
+    var local = normalizeCurrent(opts.local);
+    if (ourId) local.clientId = String(ourId);
+    var gistId = opts.gistId || '';
+
+    function finishExisting(id) {
+      return client.readCurrent(id).then(function (remote) {
+        var decision = decideCurrent(local, remote, local.clientId);
+        if (decision.action === 'apply') return { doc: decision.doc, gistId: id, pushed: false, apply: true };
+        if (decision.action !== 'push') return { doc: local, gistId: id, pushed: false, apply: false };
+        return client.writeCurrent(id, local).then(function () {
+          return { doc: local, gistId: id, pushed: true, apply: false };
+        });
+      });
+    }
+
+    if (gistId) return finishExisting(gistId);
+    return client.findGist().then(function (id) {
+      if (id) return finishExisting(id);
+      var decision = decideCurrent(local, null, local.clientId);
+      if (decision.action !== 'push') return { doc: local, gistId: '', pushed: false, apply: false };
+      return client.createCurrentGist(local).then(function (nid) {
+        return { doc: local, gistId: nid, pushed: true, apply: false };
+      });
+    });
+  }
+
   return {
     GIST_FILE: GIST_FILE,
+    CURRENT_FILE: CURRENT_FILE,
     newId: newId,
     migrate: migrate,
     normalizeDoc: normalizeDoc,
     merge: merge,
     sameDoc: sameDoc,
+    normalizeCurrent: normalizeCurrent,
+    currentKey: currentKey,
+    sameCurrent: sameCurrent,
+    shouldApplyCurrent: shouldApplyCurrent,
+    decideCurrent: decideCurrent,
+    createCurrentScheduler: createCurrentScheduler,
     createClient: createClient,
     syncOnce: syncOnce,
+    syncCurrent: syncCurrent,
     SyncError: SyncError
   };
 });
@@ -1575,6 +1814,8 @@ function wrapper(plugin_info) {
   self.FAV_TOMB_KEY = 'iitc-maxfield-planner-favorites-deleted';
   self.SYNC_TOKEN_KEY = 'iitc-maxfield-planner-gist-token';
   self.SYNC_GIST_KEY = 'iitc-maxfield-planner-gist-id';
+  self.CURRENT_KEY = 'iitc-maxfield-planner-current';
+  self.CLIENT_KEY = 'iitc-maxfield-planner-client-id';
   self.DEFAULT_FIELD_HEX = '#16d977';
   self.DEFAULT_LINK_HEX = '#e53935';
   self.DEFAULT_WALK_HEX = '#ffd24a';
@@ -3580,6 +3821,7 @@ function wrapper(plugin_info) {
     }
     self.state.startingpointIndex = i;
     self.scheduleReplan();
+    self.noteCurrentChanged();
   };
 
   self.clickPlan = function () {
@@ -3611,13 +3853,17 @@ function wrapper(plugin_info) {
       self.render();
       return;
     }
+    var changed = self.state.is_clockwise !== next;
     self.state.is_clockwise = next;
     self.scheduleReplan();
+    if (changed) self.noteCurrentChanged();
   };
 
   self.setStarDirection = function (dir) {
+    var changed = self.state.stardirection !== dir;
     self.state.stardirection = dir;
     self.scheduleReplan();
+    if (changed) self.noteCurrentChanged();
   };
 
   self.changeSBUL = function (delta) {
@@ -3627,6 +3873,7 @@ function wrapper(plugin_info) {
     if (n === self.state.availableSBUL) return;
     self.state.availableSBUL = n;
     self.scheduleReplan();
+    self.noteCurrentChanged();
   };
 
   self.clearPlan = function (renderAfter) {
@@ -3637,6 +3884,7 @@ function wrapper(plugin_info) {
     if (self.planLayer && self.planLayer.clearLayers) self.planLayer.clearLayers();
     self.drawSelection();
     if (renderAfter) self.render();
+    self.noteCurrentChanged();
   };
 
   self.clearAll = function () {
@@ -3651,6 +3899,7 @@ function wrapper(plugin_info) {
     if (self.planLayer && self.planLayer.clearLayers) self.planLayer.clearLayers();
     if (self.markerLayer && self.markerLayer.clearLayers) self.markerLayer.clearLayers();
     self.render();
+    self.noteCurrentChanged();
   };
 
   self.removePortal = function (id) {
@@ -3672,10 +3921,12 @@ function wrapper(plugin_info) {
         return;
       }
       self.scheduleReplan();
+      self.noteCurrentChanged();
       return;
     }
     self.setStatus(self.t('stToggleOff'));
     self.render();
+    self.noteCurrentChanged();
   };
 
   self.restorePortal = function (id) {
@@ -3684,10 +3935,12 @@ function wrapper(plugin_info) {
     delete self.state.excluded[id];
     if (hadPlan && self.activePortals().length >= 3) {
       self.scheduleReplan();
+      self.noteCurrentChanged();
       return;
     }
     self.setStatus(self.t('stToggleOn'));
     self.render();
+    self.noteCurrentChanged();
   };
 
   self.addPortal = function (portal) {
@@ -3783,7 +4036,8 @@ function wrapper(plugin_info) {
       if (!self.portalInPlannedFields(portalIn)) return;
       self.state.lastPickGuid = guid;
       self.state.lastPickAt = now;
-      self.addPortal(portalIn);
+      if (!self.addPortal(portalIn)) return;
+      self.noteCurrentChanged();
       self.scheduleReplan(self.state.open ? self.t('stAddedInField') : '');
       return;
     }
@@ -3803,7 +4057,8 @@ function wrapper(plugin_info) {
       self.setStatus(self.t('stAlready'));
       return;
     }
-    self.addPortal(portal);
+    if (!self.addPortal(portal)) return;
+    self.noteCurrentChanged();
     self.render();
     self.setStatus(self.defaultStatus());
   };
@@ -3820,7 +4075,7 @@ function wrapper(plugin_info) {
     opts = opts || {};
     var pts = self.activePortals();
     if (pts.length < 3) {
-      self.setStatus(self.t('stNeedThree'));
+      if (!opts.quiet) self.setStatus(self.t('stNeedThree'));
       return;
     }
     var plan;
@@ -3835,14 +4090,15 @@ function wrapper(plugin_info) {
         respectIntel: false
       });
     } catch (err) {
-      self.setStatus(self.t('stPlanFail'));
+      if (!opts.quiet) self.setStatus(self.t('stPlanFail'));
       return;
     }
     if (!plan || !plan.ok || !plan.fieldCount) {
       self.state.plan = null;
       self.drawSelection();
-      self.setStatus(self.t('stPlanFail'));
+      if (!opts.quiet) self.setStatus(self.t('stPlanFail'));
       self.render();
+      self.noteCurrentChanged();
       return;
     }
     self.state.startingpointIndex = plan.startingpointIndex;
@@ -3850,7 +4106,8 @@ function wrapper(plugin_info) {
     self.state.plan = plan;
     self.drawPlan(plan);
     self.render();
-    self.setStatus(opts.status || '');
+    if (!opts.quiet) self.setStatus(opts.status || '');
+    self.noteCurrentChanged();
   };
 
   self.renderControls = function () {
@@ -4221,6 +4478,7 @@ function wrapper(plugin_info) {
     try { self.refreshNames(); } catch (e3) {}
     self.render();
     self.setStatus(self.t('stUploaded', portals.length));
+    self.noteCurrentChanged();
     return true;
   };
 
@@ -4414,7 +4672,151 @@ function wrapper(plugin_info) {
     return self.t('syncErrNetwork');
   };
 
+  self.getClientId = function () {
+    try {
+      var id = localStorage.getItem(self.CLIENT_KEY);
+      if (id) return id;
+      id = 'mfp-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36);
+      localStorage.setItem(self.CLIENT_KEY, id);
+      return id;
+    } catch (e) {
+      if (!self._clientIdMem) {
+        self._clientIdMem = 'mfp-' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 1e9).toString(36);
+      }
+      return self._clientIdMem;
+    }
+  };
+
+  self.captureCurrentDoc = function () {
+    var portals = [];
+    var excluded = [];
+    var order = self.state.listOrder || [];
+    for (var i = 0; i < order.length; i++) {
+      var id = order[i];
+      var ex = self.state.excluded && self.state.excluded[id];
+      var pt = (self.state.portals && self.state.portals[id]) || ex;
+      if (!pt) continue;
+      var lite = {
+        guid: pt.guid || id,
+        lat: pt.lat,
+        lng: pt.lng,
+        name: pt.name || ''
+      };
+      if (ex) excluded.push(lite);
+      else portals.push(lite);
+    }
+    return {
+      updatedAt: self._currentUpdatedAt || 0,
+      clientId: self.getClientId(),
+      planned: !!self.state.plan,
+      startingpointIndex: self.state.startingpointIndex || 0,
+      is_clockwise: self.state.is_clockwise !== false,
+      stardirection: self.state.stardirection,
+      availableSBUL: self.state.availableSBUL == null ? 2 : self.state.availableSBUL,
+      portals: portals,
+      excluded: excluded,
+      listOrder: order.slice()
+    };
+  };
+
+  self.persistCurrentDoc = function (doc) {
+    try { localStorage.setItem(self.CURRENT_KEY, JSON.stringify(doc)); } catch (e) {}
+  };
+
+  self.noteCurrentChanged = function () {
+    if (self._suppressCurrentPush) return;
+    var doc = self.captureCurrentDoc();
+    var key = MaxfieldFavSync.currentKey(doc);
+    if (self._currentKey != null && key === self._currentKey) return;
+    self._currentKey = key;
+    self._currentUpdatedAt = Date.now();
+    doc.updatedAt = self._currentUpdatedAt;
+    doc.clientId = self.getClientId();
+    self.persistCurrentDoc(doc);
+    self.scheduleCurrentPush();
+  };
+
+  self.scheduleCurrentPush = function () {
+    if (!self._currentSched) {
+      self._currentSched = MaxfieldFavSync.createCurrentScheduler({
+        delay: 2000,
+        getDoc: function () { return self.captureCurrentDoc(); },
+        push: function (doc) {
+          return self.syncCurrentPlan(doc).then(function (res) {
+            return res;
+          }, function (err) {
+            self.setStatus(self.t('stSyncFail', self.syncErrorText(err)));
+            throw err;
+          });
+        }
+      });
+    }
+    self._currentSched.schedule();
+  };
+
+  // Pull, and push only when this device's copy is the newer one. Same gist as favorites.
+  self.syncCurrentPlan = function (doc) {
+    var token = self.getSyncToken();
+    if (!token) return Promise.resolve({ pushed: false, apply: false });
+    var local = doc || self.captureCurrentDoc();
+    return MaxfieldFavSync.syncCurrent({
+      token: token,
+      gistId: self.getSyncGistId(),
+      local: local,
+      clientId: self.getClientId()
+    }).then(function (res) {
+      try { if (res.gistId) localStorage.setItem(self.SYNC_GIST_KEY, res.gistId); } catch (e) {}
+      if (res.apply && res.doc && MaxfieldFavSync.shouldApplyCurrent(self.captureCurrentDoc(), res.doc, self.getClientId())) {
+        self.applyCurrentDoc(res.doc);
+      }
+      return res;
+    });
+  };
+
+  self.applyCurrentDoc = function (doc) {
+    var norm = MaxfieldFavSync.normalizeCurrent(doc);
+    self._suppressCurrentPush = true;
+    try {
+      self.state.portals = {};
+      self.state.excluded = {};
+      self.state.listOrder = norm.listOrder.slice();
+      self.state.plan = null;
+      norm.portals.forEach(function (p) {
+        self.state.portals[p.guid] = { id: p.guid, guid: p.guid, name: p.name, lat: p.lat, lng: p.lng };
+      });
+      norm.excluded.forEach(function (p) {
+        var o = { id: p.guid, guid: p.guid, name: p.name, lat: p.lat, lng: p.lng };
+        self.state.portals[p.guid] = o;
+        self.state.excluded[p.guid] = o;
+      });
+      self.state.startingpointIndex = norm.startingpointIndex;
+      self.state.is_clockwise = norm.is_clockwise;
+      self.state.stardirection = norm.stardirection;
+      self.state.availableSBUL = norm.availableSBUL;
+      self._currentUpdatedAt = norm.updatedAt;
+      if (norm.planned && self.activePortals().length >= 3) {
+        self.runPlan({ fromControl: true, quiet: true });
+      } else {
+        self.clearPlan(false);
+        self.render();
+      }
+    } finally {
+      self._suppressCurrentPush = false;
+    }
+    self._currentUpdatedAt = norm.updatedAt;
+    self._currentKey = MaxfieldFavSync.currentKey(norm);
+    self.persistCurrentDoc(norm);
+  };
+
+  self.restoreCurrentLocal = function () {
+    var raw;
+    try { raw = localStorage.getItem(self.CURRENT_KEY); } catch (e) { return; }
+    if (!raw) return;
+    try { self.applyCurrentDoc(JSON.parse(raw)); } catch (e2) {}
+  };
+
   // opts.manual: show progress and success; otherwise only failures are shown.
+  // Also pulls/pushes the current working plan. Success text stays the favorites message.
   self.syncFavorites = function (opts) {
     opts = opts || {};
     var token = self.getSyncToken();
@@ -4442,6 +4844,9 @@ function wrapper(plugin_info) {
         self.writeFavTombstones(merged.tombstones);
         try { if (res.gistId) localStorage.setItem(self.SYNC_GIST_KEY, res.gistId); } catch (e) {}
         self.renderFavorites();
+        return self.syncCurrentPlan();
+      })
+      .then(function () {
         if (opts.manual) self.setStatus(self.t('stSynced'));
       }, function (err) {
         self.setStatus(self.t('stSyncFail', self.syncErrorText(err)));
@@ -5046,6 +5451,10 @@ function wrapper(plugin_info) {
     self.buildPanel();
     self.state.open = false;
     self.updatePanelChrome();
+    self.restoreCurrentLocal();
+    if (self._currentKey == null) {
+      self._currentKey = MaxfieldFavSync.currentKey(self.captureCurrentDoc());
+    }
     if (self.getSyncToken()) {
       setTimeout(function () { self.syncFavorites(); }, 1500);
     }
