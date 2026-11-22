@@ -14,6 +14,7 @@
   'use strict';
 
   var D2R = Math.PI / 180;
+  var CROSS_LINKS_LAYER_NAME = 'Cross Links';
 
   function num(v) {
     var n = Number(v);
@@ -193,9 +194,53 @@
     return out;
   }
 
+  function layerEntries(chooser) {
+    if (!chooser || chooser._layers == null) return [];
+    var layers = chooser._layers;
+    if (Array.isArray(layers)) return layers;
+    var out = [];
+    if (typeof layers === 'object') {
+      Object.keys(layers).forEach(function (key) {
+        if (layers[key]) out.push(layers[key]);
+      });
+    }
+    return out;
+  }
+
+  // The official Cross Links overlay, identified by the layer-control label.
+  function crossLinksLayer(chooser) {
+    var list = layerEntries(chooser);
+    for (var i = 0; i < list.length; i++) {
+      var data = list[i];
+      if (!data || data.name == null) continue;
+      if (String(data.name) === CROSS_LINKS_LAYER_NAME) return data.layer || null;
+    }
+    return null;
+  }
+
+  // True only when that named layer is registered and currently on the map.
+  function isCrossLinksLayerOn(map, chooser) {
+    var layer = crossLinksLayer(chooser);
+    if (!layer || !map || typeof map.hasLayer !== 'function') return false;
+    return !!map.hasLayer(layer);
+  }
+
+  // overlayadd/overlayremove carry the control name; layeradd/layerremove carry the layer.
+  function isCrossLinksToggleEvent(event, chooser) {
+    if (!event) return false;
+    if (event.name != null && String(event.name) === CROSS_LINKS_LAYER_NAME) return true;
+    var layer = crossLinksLayer(chooser);
+    if (!layer) return false;
+    return event.layer === layer || event.target === layer;
+  }
+
   return {
+    CROSS_LINKS_LAYER_NAME: CROSS_LINKS_LAYER_NAME,
     greatCircleArcIntersect: greatCircleArcIntersect,
     linkEnds: linkEnds,
-    crossedIntelLinks: crossedIntelLinks
+    crossedIntelLinks: crossedIntelLinks,
+    crossLinksLayer: crossLinksLayer,
+    isCrossLinksLayerOn: isCrossLinksLayerOn,
+    isCrossLinksToggleEvent: isCrossLinksToggleEvent
   };
 });

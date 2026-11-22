@@ -2,7 +2,7 @@
 // @id             iitc-plugin-maxfield-planner@iitc
 // @name           IITC plugin: maxfield-planner
 // @category       Draw
-// @version        1.3.9
+// @version        1.3.10
 // @namespace      iitc-plugin-maxfield-planner
 // @description    在地图上直接点选 portal，用 Fan Fields 2 原版规划算法（锚点 Cycle Start、顺/逆时针、Inbound/Outbound）生成 field 最大化的 link 与行走顺序。统计层数、link、portal 与 AP。支持中英文与深浅色主题。兼容 IITC 桌面端与 IITC Mobile。本插件是 Fan Fields 2（ISC，© 2018-2025 IITC plugin: Fan Fields 2 / Justus Kenklies）规划引擎的派生作品，不是官方 Fan Fields 2。
 // @include        https://intel.ingress.com/*
@@ -41,6 +41,7 @@
  */
 function wrapper(plugin_info) {
   'use strict';
+  var MFP_VERSION = '1.3.10';
 
 /* Leaflet-compatible Web Mercator (EPSG:3857) helpers for Node tests.
  * In IITC the engine uses the real map.project / map.unproject and L.Point / L.LatLng.
@@ -1810,6 +1811,7 @@ function wrapper(plugin_info) {
   'use strict';
 
   var D2R = Math.PI / 180;
+  var CROSS_LINKS_LAYER_NAME = 'Cross Links';
 
   function num(v) {
     var n = Number(v);
@@ -1989,10 +1991,54 @@ function wrapper(plugin_info) {
     return out;
   }
 
+  function layerEntries(chooser) {
+    if (!chooser || chooser._layers == null) return [];
+    var layers = chooser._layers;
+    if (Array.isArray(layers)) return layers;
+    var out = [];
+    if (typeof layers === 'object') {
+      Object.keys(layers).forEach(function (key) {
+        if (layers[key]) out.push(layers[key]);
+      });
+    }
+    return out;
+  }
+
+  // The official Cross Links overlay, identified by the layer-control label.
+  function crossLinksLayer(chooser) {
+    var list = layerEntries(chooser);
+    for (var i = 0; i < list.length; i++) {
+      var data = list[i];
+      if (!data || data.name == null) continue;
+      if (String(data.name) === CROSS_LINKS_LAYER_NAME) return data.layer || null;
+    }
+    return null;
+  }
+
+  // True only when that named layer is registered and currently on the map.
+  function isCrossLinksLayerOn(map, chooser) {
+    var layer = crossLinksLayer(chooser);
+    if (!layer || !map || typeof map.hasLayer !== 'function') return false;
+    return !!map.hasLayer(layer);
+  }
+
+  // overlayadd/overlayremove carry the control name; layeradd/layerremove carry the layer.
+  function isCrossLinksToggleEvent(event, chooser) {
+    if (!event) return false;
+    if (event.name != null && String(event.name) === CROSS_LINKS_LAYER_NAME) return true;
+    var layer = crossLinksLayer(chooser);
+    if (!layer) return false;
+    return event.layer === layer || event.target === layer;
+  }
+
   return {
+    CROSS_LINKS_LAYER_NAME: CROSS_LINKS_LAYER_NAME,
     greatCircleArcIntersect: greatCircleArcIntersect,
     linkEnds: linkEnds,
-    crossedIntelLinks: crossedIntelLinks
+    crossedIntelLinks: crossedIntelLinks,
+    crossLinksLayer: crossLinksLayer,
+    isCrossLinksLayerOn: isCrossLinksLayerOn,
+    isCrossLinksToggleEvent: isCrossLinksToggleEvent
   };
 });
 
@@ -2018,6 +2064,7 @@ function wrapper(plugin_info) {
   self.SYNC_GIST_KEY = 'iitc-maxfield-planner-gist-id';
   self.CURRENT_KEY = 'iitc-maxfield-planner-current';
   self.CLIENT_KEY = 'iitc-maxfield-planner-client-id';
+  self.VERSION = (typeof MFP_VERSION === 'string' && MFP_VERSION) ? MFP_VERSION : '';
   self.DEFAULT_FIELD_HEX = '#16d977';
   self.DEFAULT_LINK_HEX = '#e53935';
   self.DEFAULT_WALK_HEX = '#ffd24a';
@@ -2795,7 +2842,9 @@ function wrapper(plugin_info) {
       '#mfp-panel.mfp-min.mfp-mobile{max-height:none;}',
       '#mfp-panel .mfp-header{display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--mfp-header-bg);cursor:move;user-select:none;-webkit-user-select:none;color:var(--mfp-text);}',
       '#mfp-panel.mfp-mobile .mfp-header{cursor:default;}',
-      '#mfp-panel .mfp-title{flex:1;font-weight:700;font-size:15px;letter-spacing:.02em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '#mfp-panel .mfp-title{flex:1;display:flex;align-items:baseline;gap:6px;min-width:0;overflow:hidden;}',
+      '#mfp-panel .mfp-title-name{font-weight:700;font-size:15px;letter-spacing:.02em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '#mfp-panel .mfp-version{flex:0 0 auto;font-size:11px;font-weight:600;letter-spacing:0;color:var(--mfp-muted);white-space:nowrap;}',
       '#mfp-panel .mfp-iconbtn{appearance:none;border:0;background:var(--mfp-icon-bg);color:var(--mfp-icon-color);width:36px;height:36px;border-radius:8px;font-size:18px;line-height:36px;padding:0;cursor:pointer;flex-shrink:0;}',
       '#mfp-panel .mfp-iconbtn.mfp-langbtn,#mfp-panel .mfp-iconbtn.mfp-themebtn{font-size:13px;font-weight:700;letter-spacing:0;}',
       '#mfp-panel .mfp-body{padding:8px 10px 10px;overflow:auto;-webkit-overflow-scrolling:touch;flex:1 1 auto;min-height:0;}',
@@ -3488,7 +3537,21 @@ function wrapper(plugin_info) {
 
   self.applyChrome = function () {
     var title = document.getElementById('mfp-title');
-    if (title) title.textContent = self.t('title');
+    if (title) {
+      var nameEl = title.querySelector('.mfp-title-name');
+      var verEl = title.querySelector('.mfp-version');
+      if (!nameEl || !verEl) {
+        title.textContent = '';
+        nameEl = document.createElement('span');
+        nameEl.className = 'mfp-title-name';
+        verEl = document.createElement('span');
+        verEl.className = 'mfp-version';
+        title.appendChild(nameEl);
+        title.appendChild(verEl);
+      }
+      nameEl.textContent = self.t('title');
+      verEl.textContent = self.VERSION || '';
+    }
     var langBtn = document.getElementById('mfp-lang');
     if (langBtn) {
       var isZh = self.getLang() === 'zh';
@@ -5539,9 +5602,21 @@ function wrapper(plugin_info) {
 
   // Red dashed overlay on Intel links that cross the plan. Same test and stroke as
   // IITC Cross Links. Drawn on our own layer; window.links is not restyled.
+  self.crossLinksLayerOn = function () {
+    if (typeof MaxfieldCrossLinks === 'undefined' || !MaxfieldCrossLinks.isCrossLinksLayerOn) return false;
+    return MaxfieldCrossLinks.isCrossLinksLayerOn(window.map, window.layerChooser);
+  };
+
+  self.onCrossLinksLayerToggle = function (event) {
+    if (typeof MaxfieldCrossLinks === 'undefined' || !MaxfieldCrossLinks.isCrossLinksToggleEvent) return;
+    if (!MaxfieldCrossLinks.isCrossLinksToggleEvent(event, window.layerChooser)) return;
+    self.drawCrossHighlights(self.state.plan);
+  };
+
   self.drawCrossHighlights = function (plan) {
     if (!self.crossLinkLayer || typeof L === 'undefined') return;
     self.crossLinkLayer.clearLayers();
+    if (!self.crossLinksLayerOn()) return;
     if (!plan || !plan.links || !plan.links.length) return;
     if (typeof MaxfieldCrossLinks === 'undefined' || !window.links) return;
     var hits;
@@ -5672,6 +5747,11 @@ function wrapper(plugin_info) {
         });
       } catch (err) {}
     });
+    if (window.map && window.map.on) {
+      ['overlayadd', 'overlayremove', 'layeradd', 'layerremove'].forEach(function (evName) {
+        window.map.on(evName, self.onCrossLinksLayerToggle);
+      });
+    }
     if (window.addHook) {
       try {
         window.addHook('portalDetailsUpdated', function () {
@@ -5716,9 +5796,11 @@ function wrapper(plugin_info) {
 
 
   function setup() {
-    if (window.plugin && window.plugin.maxfieldPlanner && typeof window.plugin.maxfieldPlanner.init === 'function') {
-      window.plugin.maxfieldPlanner.init();
+    var p = window.plugin && window.plugin.maxfieldPlanner;
+    if (p && plugin_info && plugin_info.script && plugin_info.script.version) {
+      p.VERSION = String(plugin_info.script.version);
     }
+    if (p && typeof p.init === 'function') p.init();
   }
 
   setup.info = plugin_info;

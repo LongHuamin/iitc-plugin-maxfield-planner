@@ -5,7 +5,7 @@ var fs = require('fs');
 var path = require('path');
 
 var root = __dirname;
-var version = '1.3.9';
+var version = '1.3.10';
 
 var userscriptHeader = [
   '// ==UserScript==',
@@ -64,15 +64,18 @@ var ui = fs.readFileSync(path.join(root, 'src/plugin-ui.js'), 'utf8');
 var wrapperOpen = [
   'function wrapper(plugin_info) {',
   "  'use strict';",
+  "  var MFP_VERSION = '" + version + "';",
   '',
 ].join('\n');
 
 var wrapperClose = [
   '',
   '  function setup() {',
-  "    if (window.plugin && window.plugin.maxfieldPlanner && typeof window.plugin.maxfieldPlanner.init === 'function') {",
-  '      window.plugin.maxfieldPlanner.init();',
+  '    var p = window.plugin && window.plugin.maxfieldPlanner;',
+  '    if (p && plugin_info && plugin_info.script && plugin_info.script.version) {',
+  '      p.VERSION = String(plugin_info.script.version);',
   '    }',
+  "    if (p && typeof p.init === 'function') p.init();",
   '  }',
   '',
   '  setup.info = plugin_info;',

@@ -20,6 +20,7 @@
   self.SYNC_GIST_KEY = 'iitc-maxfield-planner-gist-id';
   self.CURRENT_KEY = 'iitc-maxfield-planner-current';
   self.CLIENT_KEY = 'iitc-maxfield-planner-client-id';
+  self.VERSION = (typeof MFP_VERSION === 'string' && MFP_VERSION) ? MFP_VERSION : '';
   self.DEFAULT_FIELD_HEX = '#16d977';
   self.DEFAULT_LINK_HEX = '#e53935';
   self.DEFAULT_WALK_HEX = '#ffd24a';
@@ -797,7 +798,9 @@
       '#mfp-panel.mfp-min.mfp-mobile{max-height:none;}',
       '#mfp-panel .mfp-header{display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--mfp-header-bg);cursor:move;user-select:none;-webkit-user-select:none;color:var(--mfp-text);}',
       '#mfp-panel.mfp-mobile .mfp-header{cursor:default;}',
-      '#mfp-panel .mfp-title{flex:1;font-weight:700;font-size:15px;letter-spacing:.02em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '#mfp-panel .mfp-title{flex:1;display:flex;align-items:baseline;gap:6px;min-width:0;overflow:hidden;}',
+      '#mfp-panel .mfp-title-name{font-weight:700;font-size:15px;letter-spacing:.02em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+      '#mfp-panel .mfp-version{flex:0 0 auto;font-size:11px;font-weight:600;letter-spacing:0;color:var(--mfp-muted);white-space:nowrap;}',
       '#mfp-panel .mfp-iconbtn{appearance:none;border:0;background:var(--mfp-icon-bg);color:var(--mfp-icon-color);width:36px;height:36px;border-radius:8px;font-size:18px;line-height:36px;padding:0;cursor:pointer;flex-shrink:0;}',
       '#mfp-panel .mfp-iconbtn.mfp-langbtn,#mfp-panel .mfp-iconbtn.mfp-themebtn{font-size:13px;font-weight:700;letter-spacing:0;}',
       '#mfp-panel .mfp-body{padding:8px 10px 10px;overflow:auto;-webkit-overflow-scrolling:touch;flex:1 1 auto;min-height:0;}',
@@ -1490,7 +1493,21 @@
 
   self.applyChrome = function () {
     var title = document.getElementById('mfp-title');
-    if (title) title.textContent = self.t('title');
+    if (title) {
+      var nameEl = title.querySelector('.mfp-title-name');
+      var verEl = title.querySelector('.mfp-version');
+      if (!nameEl || !verEl) {
+        title.textContent = '';
+        nameEl = document.createElement('span');
+        nameEl.className = 'mfp-title-name';
+        verEl = document.createElement('span');
+        verEl.className = 'mfp-version';
+        title.appendChild(nameEl);
+        title.appendChild(verEl);
+      }
+      nameEl.textContent = self.t('title');
+      verEl.textContent = self.VERSION || '';
+    }
     var langBtn = document.getElementById('mfp-lang');
     if (langBtn) {
       var isZh = self.getLang() === 'zh';
@@ -3541,9 +3558,21 @@
 
   // Red dashed overlay on Intel links that cross the plan. Same test and stroke as
   // IITC Cross Links. Drawn on our own layer; window.links is not restyled.
+  self.crossLinksLayerOn = function () {
+    if (typeof MaxfieldCrossLinks === 'undefined' || !MaxfieldCrossLinks.isCrossLinksLayerOn) return false;
+    return MaxfieldCrossLinks.isCrossLinksLayerOn(window.map, window.layerChooser);
+  };
+
+  self.onCrossLinksLayerToggle = function (event) {
+    if (typeof MaxfieldCrossLinks === 'undefined' || !MaxfieldCrossLinks.isCrossLinksToggleEvent) return;
+    if (!MaxfieldCrossLinks.isCrossLinksToggleEvent(event, window.layerChooser)) return;
+    self.drawCrossHighlights(self.state.plan);
+  };
+
   self.drawCrossHighlights = function (plan) {
     if (!self.crossLinkLayer || typeof L === 'undefined') return;
     self.crossLinkLayer.clearLayers();
+    if (!self.crossLinksLayerOn()) return;
     if (!plan || !plan.links || !plan.links.length) return;
     if (typeof MaxfieldCrossLinks === 'undefined' || !window.links) return;
     var hits;
@@ -3674,6 +3703,11 @@
         });
       } catch (err) {}
     });
+    if (window.map && window.map.on) {
+      ['overlayadd', 'overlayremove', 'layeradd', 'layerremove'].forEach(function (evName) {
+        window.map.on(evName, self.onCrossLinksLayerToggle);
+      });
+    }
     if (window.addHook) {
       try {
         window.addHook('portalDetailsUpdated', function () {

@@ -34,5 +34,24 @@ var hits = C.crossedIntelLinks(planLinks, intel);
 ok(hits.length === 1 && hits[0].guid === 'crosser', 'only the crossing Intel link is returned: ' + hits.map(function (h) { return h.guid; }).join(','));
 ok(hits[0].latlngs[0].lat === -1 && hits[0].latlngs[1].lng === 1, 'returned geometry is the Intel link');
 
+console.log('3. Cross Links layer checkbox');
+var crossLayer = { id: 'official' };
+var otherLayer = { id: 'other' };
+function mapWith(on) {
+  return { hasLayer: function (layer) { return on && layer === crossLayer; } };
+}
+var chooser = { _layers: [
+  { name: 'Links', overlay: true, layer: otherLayer },
+  { name: 'Cross Links', overlay: true, layer: crossLayer }
+] };
+ok(C.isCrossLinksLayerOn(mapWith(true), chooser) === true, 'checked Cross Links layer is on');
+ok(C.isCrossLinksLayerOn(mapWith(false), chooser) === false, 'unchecked Cross Links layer is off');
+ok(C.isCrossLinksLayerOn(mapWith(true), { _layers: [{ name: 'Links', layer: otherLayer }] }) === false, 'missing Cross Links plugin shows nothing');
+ok(C.isCrossLinksLayerOn(null, chooser) === false, 'no map is off');
+ok(C.isCrossLinksToggleEvent({ name: 'Cross Links', layer: crossLayer }, chooser) === true, 'overlayadd by name is our toggle');
+ok(C.isCrossLinksToggleEvent({ name: 'Links', layer: otherLayer }, chooser) === false, 'another overlay is ignored');
+ok(C.isCrossLinksToggleEvent({ layer: crossLayer }, chooser) === true, 'layeradd of the official layer is our toggle');
+ok(C.CROSS_LINKS_LAYER_NAME === 'Cross Links', 'layer label is Cross Links');
+
 console.log('\n' + passed + ' passed, ' + failed + ' failed');
 process.exit(failed ? 1 : 0);
