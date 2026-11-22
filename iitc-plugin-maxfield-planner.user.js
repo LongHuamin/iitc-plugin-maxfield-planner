@@ -2,7 +2,7 @@
 // @id             iitc-plugin-maxfield-planner@iitc
 // @name           IITC plugin: maxfield-planner
 // @category       Draw
-// @version        1.3.10
+// @version        1.3.11
 // @namespace      iitc-plugin-maxfield-planner
 // @description    在地图上直接点选 portal，用 Fan Fields 2 原版规划算法（锚点 Cycle Start、顺/逆时针、Inbound/Outbound）生成 field 最大化的 link 与行走顺序。统计层数、link、portal 与 AP。支持中英文与深浅色主题。兼容 IITC 桌面端与 IITC Mobile。本插件是 Fan Fields 2（ISC，© 2018-2025 IITC plugin: Fan Fields 2 / Justus Kenklies）规划引擎的派生作品，不是官方 Fan Fields 2。
 // @include        https://intel.ingress.com/*
@@ -41,7 +41,7 @@
  */
 function wrapper(plugin_info) {
   'use strict';
-  var MFP_VERSION = '1.3.10';
+  var MFP_VERSION = '1.3.11';
 
 /* Leaflet-compatible Web Mercator (EPSG:3857) helpers for Node tests.
  * In IITC the engine uses the real map.project / map.unproject and L.Point / L.LatLng.
@@ -2742,7 +2742,7 @@ function wrapper(plugin_info) {
       b.style.background = hex;
       if (self.isLightHex(hex)) b.style.borderColor = 'rgba(0,0,0,.35)';
       b.setAttribute('data-hex', hex);
-      b.title = hex;
+      self.setTip(b, hex);
       b.addEventListener('click', function (e) {
         e.preventDefault();
         e.stopPropagation();
@@ -2845,6 +2845,8 @@ function wrapper(plugin_info) {
       '#mfp-panel .mfp-title{flex:1;display:flex;align-items:baseline;gap:6px;min-width:0;overflow:hidden;}',
       '#mfp-panel .mfp-title-name{font-weight:700;font-size:15px;letter-spacing:.02em;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
       '#mfp-panel .mfp-version{flex:0 0 auto;font-size:11px;font-weight:600;letter-spacing:0;color:var(--mfp-muted);white-space:nowrap;}',
+      '#mfp-hover-tip{position:fixed;z-index:10000;display:none;max-width:280px;padding:6px 8px;border-radius:6px;background:#24312f;color:#eef6f4;border:1px solid rgba(159,240,228,.45);box-shadow:0 6px 18px rgba(0,0,0,.35);font:12px/1.4 "Roboto","Noto Sans SC","Helvetica Neue",Arial,sans-serif;pointer-events:none;}',
+      '#mfp-hover-tip.mfp-theme-light{background:#fff;color:#1a2422;border-color:rgba(20,120,110,.4);box-shadow:0 6px 18px rgba(0,0,0,.16);}',
       '#mfp-panel .mfp-iconbtn{appearance:none;border:0;background:var(--mfp-icon-bg);color:var(--mfp-icon-color);width:36px;height:36px;border-radius:8px;font-size:18px;line-height:36px;padding:0;cursor:pointer;flex-shrink:0;}',
       '#mfp-panel .mfp-iconbtn.mfp-langbtn,#mfp-panel .mfp-iconbtn.mfp-themebtn{font-size:13px;font-weight:700;letter-spacing:0;}',
       '#mfp-panel .mfp-body{padding:8px 10px 10px;overflow:auto;-webkit-overflow-scrolling:touch;flex:1 1 auto;min-height:0;}',
@@ -3381,7 +3383,7 @@ function wrapper(plugin_info) {
     btn.className = 'mfp-portal-link';
     btn.textContent = self.portalName(pt);
     if (pt && (self.portalGuid(pt) || (pt.lat != null && pt.lng != null))) {
-      btn.title = self.t('jumpTo');
+      self.setTip(btn, self.t('jumpTo'));
       btn.addEventListener('click', function (e) {
         if (e.preventDefault) e.preventDefault();
         if (e.stopPropagation) e.stopPropagation();
@@ -3535,6 +3537,98 @@ function wrapper(plugin_info) {
   };
 
 
+  // One hint only. IITC turns title into a jQuery UI tooltip, and the browser
+  // also shows the same title, so hints live in data-mfp-tip instead.
+  self.setTip = function (el, text) {
+    if (!el) return;
+    text = text ? String(text) : '';
+    if (el.disabled && text) {
+      el.title = text;
+      el.removeAttribute('data-mfp-tip');
+      return;
+    }
+    el.removeAttribute('title');
+    if (text) el.setAttribute('data-mfp-tip', text);
+    else el.removeAttribute('data-mfp-tip');
+  };
+
+  self.hideHoverTip = function () {
+    self._tipEl = null;
+    if (self._tipTimer) {
+      clearTimeout(self._tipTimer);
+      self._tipTimer = null;
+    }
+    var tip = document.getElementById('mfp-hover-tip');
+    if (tip) tip.style.display = 'none';
+  };
+
+  self.showHoverTip = function (el) {
+    if (!el) return;
+    var text = el.getAttribute('data-mfp-tip');
+    if (!text) {
+      self.hideHoverTip();
+      return;
+    }
+    var tip = document.getElementById('mfp-hover-tip');
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = 'mfp-hover-tip';
+      tip.setAttribute('role', 'tooltip');
+      document.body.appendChild(tip);
+    }
+    var panel = document.getElementById('mfp-panel');
+    tip.className = (panel && /\bmfp-theme-light\b/.test(panel.className)) ? 'mfp-theme-light' : '';
+    tip.textContent = text;
+    tip.style.display = 'block';
+    var rect = el.getBoundingClientRect();
+    var width = tip.offsetWidth;
+    var height = tip.offsetHeight;
+    var left = rect.left;
+    var top = rect.bottom + 6;
+    if (left + width > window.innerWidth - 8) left = window.innerWidth - width - 8;
+    if (left < 8) left = 8;
+    if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 6);
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  };
+
+  self.scheduleHoverTip = function (el) {
+    if (!el || self._tipEl === el) return;
+    self.hideHoverTip();
+    self._tipEl = el;
+    self._tipTimer = setTimeout(function () {
+      self._tipTimer = null;
+      if (self._tipEl === el) self.showHoverTip(el);
+    }, 350);
+  };
+
+  self.bindHoverTips = function () {
+    if (self._hoverTipsBound || typeof document === 'undefined') return;
+    self._hoverTipsBound = true;
+    document.addEventListener('mouseover', function (e) {
+      var el = e.target && e.target.closest && e.target.closest('[data-mfp-tip]');
+      if (!el) return;
+      self.scheduleHoverTip(el);
+    });
+    document.addEventListener('mouseout', function (e) {
+      var el = e.target && e.target.closest && e.target.closest('[data-mfp-tip]');
+      if (!el) return;
+      var to = e.relatedTarget;
+      if (to && (to === el || el.contains(to))) return;
+      self.hideHoverTip();
+    });
+    document.addEventListener('focusin', function (e) {
+      var el = e.target && e.target.closest && e.target.closest('[data-mfp-tip]');
+      if (el) self.scheduleHoverTip(el);
+    });
+    document.addEventListener('focusout', function (e) {
+      var el = e.target && e.target.closest && e.target.closest('[data-mfp-tip]');
+      if (el) self.hideHoverTip();
+    });
+    document.addEventListener('scroll', function () { self.hideHoverTip(); }, true);
+    document.addEventListener('mousedown', function () { self.hideHoverTip(); }, true);
+  };
+
   self.applyChrome = function () {
     var title = document.getElementById('mfp-title');
     if (title) {
@@ -3556,44 +3650,44 @@ function wrapper(plugin_info) {
     if (langBtn) {
       var isZh = self.getLang() === 'zh';
       langBtn.textContent = isZh ? 'EN' : '中';
-      langBtn.title = self.t('langTitle');
+      self.setTip(langBtn, self.t('langTitle'));
     }
     var themeBtn = document.getElementById('mfp-theme');
     if (themeBtn) {
       var isDark = self.getTheme() === 'dark';
       themeBtn.textContent = isDark ? '亮' : '暗';
-      themeBtn.title = isDark ? self.t('themeTitleLight') : self.t('themeTitleDark');
+      self.setTip(themeBtn, isDark ? self.t('themeTitleLight') : self.t('themeTitleDark'));
     }
     var minBtn = document.getElementById('mfp-min');
     if (minBtn) {
       minBtn.textContent = self.state.minimized ? '+' : '–';
-      minBtn.title = self.state.minimized ? self.t('expand') : self.t('min');
+      self.setTip(minBtn, self.state.minimized ? self.t('expand') : self.t('min'));
     }
     var closeBtn = document.getElementById('mfp-close');
-    if (closeBtn) closeBtn.title = self.t('close');
+    if (closeBtn) self.setTip(closeBtn, self.t('close'));
     var fl = document.getElementById('mfp-field-color-label');
     if (fl) fl.textContent = self.t('fieldColor');
     var ll = document.getElementById('mfp-link-color-label');
     if (ll) ll.textContent = self.t('linkColor');
     var fieldSw = document.getElementById('mfp-field-swatch');
-    if (fieldSw) fieldSw.title = self.t('fieldColor');
+    if (fieldSw) self.setTip(fieldSw, self.t('fieldColor'));
     var linkSw = document.getElementById('mfp-link-swatch');
-    if (linkSw) linkSw.title = self.t('linkColor');
+    if (linkSw) self.setTip(linkSw, self.t('linkColor'));
     var wl = document.getElementById('mfp-walk-color-label');
     if (wl) wl.textContent = self.t('walkColor');
     var walkSw = document.getElementById('mfp-walk-swatch');
-    if (walkSw) walkSw.title = self.t('walkColor');
+    if (walkSw) self.setTip(walkSw, self.t('walkColor'));
     var fvb = document.getElementById('mfp-field-visible');
-    if (fvb) fvb.title = self.t('showField');
+    if (fvb) self.setTip(fvb, self.t('showField'));
     var lvb = document.getElementById('mfp-link-visible');
-    if (lvb) lvb.title = self.t('showLink');
+    if (lvb) self.setTip(lvb, self.t('showLink'));
     var wvb = document.getElementById('mfp-walk-visible');
-    if (wvb) wvb.title = self.t('showWalk');
+    if (wvb) self.setTip(wvb, self.t('showWalk'));
     self.updateWalkToggle();
     var resizeIds = ['mfp-resize', 'mfp-resize-s', 'mfp-resize-se'];
     for (var ri = 0; ri < resizeIds.length; ri++) {
       var resizeEl = document.getElementById(resizeIds[ri]);
-      if (resizeEl) resizeEl.title = self.t('resizeHint');
+      if (resizeEl) self.setTip(resizeEl, self.t('resizeHint'));
     }
     var planBtn = document.getElementById('mfp-plan');
     if (planBtn) planBtn.textContent = self.t('planLink');
@@ -3626,7 +3720,7 @@ function wrapper(plugin_info) {
     var tab = document.getElementById('mfp-tab');
     if (tab) {
       tab.textContent = self.t('tab');
-      tab.title = self.t('tabTitle');
+      self.setTip(tab, self.t('tabTitle'));
     }
     var link = document.getElementById('mfp-toolbox-link');
     if (link) link.textContent = self.t('toolbox');
@@ -3641,9 +3735,9 @@ function wrapper(plugin_info) {
     setTxt('mfp-anchor-label', 'anchorNow');
     setTxt('mfp-sbul-label', 'sbul');
     var sbul = document.getElementById('mfp-sbul-row');
-    if (sbul) sbul.title = self.t('sbulHint');
+    if (sbul) self.setTip(sbul, self.t('sbulHint'));
     var dirBtn = document.getElementById('mfp-star-dir');
-    if (dirBtn) dirBtn.title = self.t('starDirHint');
+    if (dirBtn) self.setTip(dirBtn, self.t('starDirHint'));
     self.renderControls();
   };
 
@@ -3652,7 +3746,7 @@ function wrapper(plugin_info) {
     var tab = document.createElement('div');
     tab.id = 'mfp-tab';
     tab.textContent = self.t('tab');
-    tab.title = self.t('tabTitle');
+    self.setTip(tab, self.t('tabTitle'));
     tab.addEventListener('click', function () { /* drag binder owns click */ });
     document.body.appendChild(tab);
     self.applyTheme();
@@ -3665,9 +3759,9 @@ function wrapper(plugin_info) {
     var panel = document.createElement('div');
     panel.id = 'mfp-panel';
     panel.innerHTML = [
-      '<div class="mfp-resize mfp-resize-w" id="mfp-resize" title=""></div>',
-      '<div class="mfp-resize-s" id="mfp-resize-s" title=""></div>',
-      '<div class="mfp-resize-se" id="mfp-resize-se" title=""></div>',
+      '<div class="mfp-resize mfp-resize-w" id="mfp-resize"></div>',
+      '<div class="mfp-resize-s" id="mfp-resize-s"></div>',
+      '<div class="mfp-resize-se" id="mfp-resize-se"></div>',
       '<div class="mfp-header" id="mfp-header">',
       '  <div class="mfp-title" id="mfp-title"></div>',
       '  <button type="button" class="mfp-iconbtn mfp-langbtn" id="mfp-lang">EN</button>',
@@ -4395,7 +4489,7 @@ function wrapper(plugin_info) {
     if (dirBtn) {
       dirBtn.textContent = self.t('outbound');
       dirBtn.className = 'mfp-ctrl-btn mfp-dir' + (outbound ? ' on' : '');
-      dirBtn.title = self.t('starDirHint');
+      self.setTip(dirBtn, self.t('starDirHint'));
     }
     var sbulRow = document.getElementById('mfp-sbul-row');
     if (sbulRow) sbulRow.style.display = 'inline-flex';
@@ -4407,10 +4501,10 @@ function wrapper(plugin_info) {
         var cur = self.schemeIndex() + 1;
         var total = self.schemeCount();
         planBtn.textContent = self.t('planWithScheme', cur, total);
-        planBtn.title = self.t('planHint', cur, total);
+        self.setTip(planBtn, self.t('planHint', cur, total));
       } else {
         planBtn.textContent = self.t('planLink');
-        planBtn.title = '';
+        self.setTip(planBtn, '');
       }
     }
     var tools = document.getElementById('mfp-plan-tools');
@@ -4486,6 +4580,8 @@ function wrapper(plugin_info) {
         btn.textContent = self.t('remove');
         if (self.state.plan && anchorId && id === anchorId) {
           btn.disabled = true;
+          // Disabled controls do not receive hover events, so the browser title
+          // is the only tip. IITC's tooltip never opens on them.
           btn.title = self.t('stCannotRemoveAnchor');
         }
         btn.addEventListener('click', function (gid) {
@@ -5278,8 +5374,8 @@ function wrapper(plugin_info) {
       name.textContent = fav.name || '';
       if (fav.savedAt) {
         var d = new Date(fav.savedAt);
-        name.title = d.getFullYear() + '-' + self.pad2(d.getMonth() + 1) + '-' + self.pad2(d.getDate()) +
-          ' ' + self.pad2(d.getHours()) + ':' + self.pad2(d.getMinutes());
+        self.setTip(name, d.getFullYear() + '-' + self.pad2(d.getMonth() + 1) + '-' + self.pad2(d.getDate()) +
+          ' ' + self.pad2(d.getHours()) + ':' + self.pad2(d.getMinutes()));
       }
       row.appendChild(name);
       var loadBtn = document.createElement('button');
@@ -5709,6 +5805,7 @@ function wrapper(plugin_info) {
 
   self.init = function () {
     self.injectCSS();
+    self.bindHoverTips();
     self.drawLayer = new L.LayerGroup();
     self.planLayer = new L.FeatureGroup();
     self.markerLayer = new L.FeatureGroup();
